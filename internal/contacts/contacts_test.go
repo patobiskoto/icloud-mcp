@@ -1064,7 +1064,7 @@ func TestStrictVCardFramingAndLogicalLines(t *testing.T) {
 		{name: "missing final line ending", card: strings.TrimSuffix(valid, "\r\n")},
 		{name: "duplicate UID", card: strings.Replace(valid, "UID:strict-card\r\n", "UID:strict-card\r\nUID:second\r\n", 1)},
 		{name: "missing FN", card: strings.Replace(valid, "FN:Strict Card\r\n", "", 1)},
-		{name: "malformed N", card: strings.Replace(valid, "N:Card;Strict;;;\r\n", "N:Card;Strict\r\n", 1)},
+		{name: "malformed N", card: strings.Replace(valid, "N:Card;Strict;;;\r\n", "N:Card;Strict;;;;\r\n", 1)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -1355,6 +1355,65 @@ func TestVCardVersionPropertyRules(t *testing.T) {
 	}
 	if card, version, err := decodeCard([]byte("BEGIN:VCARD\r\nVERSION:4.0\r\nUID:ok\r\nFN:One\r\nFN:Two\r\nN:Two;One;;;\r\nEND:VCARD\r\n")); err != nil || version != "4.0" || card.Value(vcard.FieldUID) != "ok" {
 		t.Fatalf("valid v4 card rejected: %v", err)
+	}
+}
+
+// RFC 2426 section 3.1.2 lets a vCard 3.0 N value omit trailing components
+// (0 to 4 semicolons). iOS writes contact groups that way ("N:<group name>").
+func TestVCard3AcceptsShortStructuredName(t *testing.T) {
+	appleGroup := "BEGIN:VCARD\r\nVERSION:3.0\r\nPRODID:-//Apple Inc.//iOS 18.5//EN\r\nN:starred\r\nFN:starred\r\n" +
+		"X-ADDRESSBOOKSERVER-KIND:group\r\nX-ADDRESSBOOKSERVER-MEMBER:urn:uuid:a\r\nUID:apple-group\r\nEND:VCARD\r\n"
+	short := "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:short\r\nFN:Jane Doe\r\nN:Doe;Jane\r\nEND:VCARD\r\n"
+	for name, card := range map[string]string{"apple group": appleGroup, "two components": short} {
+		if _, version, err := decodeCard([]byte(card)); err != nil || version != "3.0" {
+			t.Fatalf("%s rejected: %v", name, err)
+		}
+	}
+	tooMany := "BEGIN:VCARD\r\nVERSION:3.0\r\nUID:too-many\r\nFN:Too Many\r\nN:a;b;c;d;e;f\r\nEND:VCARD\r\n"
+	_, _, err := decodeCard([]byte(tooMany))
+	requireCode(t, err, CodeProtocolError)
+
+	cards := map[string]string{
+		"/home/book/alice.vcf": v3Card("a", "Alice Zephyr"),
+		"/home/book/group.vcf": appleGroup,
+		"/home/book/short.vcf": short,
+	}
+	client := NewClient(discoveryDoer(multiCardResponseXML(cards)), "https://contacts.icloud.com/", allowContactsHost)
+	book := discoveredBook(t, client)
+	for _, test := range []struct {
+		opts SearchOptions
+		want string
+	}{
+		{SearchOptions{AddressBook: book.Identifier}, "a,short"},
+		{SearchOptions{AddressBook: book.Identifier, IncludeGroups: true}, "a,short,apple-group"},
+		{SearchOptions{AddressBook: book.Identifier, Query: "doe"}, "short"},
+	} {
+		result, err := client.SearchContacts(context.Background(), test.opts)
+		if err != nil {
+			t.Fatalf("SearchContacts(%+v) error = %v", test.opts, err)
+		}
+		var got []string
+		for _, contact := range result.Contacts {
+			got = append(got, contact.UID)
+		}
+		if strings.Join(got, ",") != test.want {
+			t.Fatalf("SearchContacts(%+v) UIDs = %v, want %s", test.opts, got, test.want)
+		}
+	}
+
+	doer := doerFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodGet {
+			return httpResponse(req, http.StatusOK, short, map[string]string{"Content-Type": "text/vcard", "ETag": `"s1"`}), nil
+		}
+		return discoveryDoer(cardResponseXML("/home/book/short.vcf", `"s1"`, short))(req)
+	})
+	client = NewClient(doer, "https://contacts.icloud.com/", allowContactsHost)
+	detail, err := client.GetContact(context.Background(), discoveredBook(t, client).Identifier, "short")
+	if err != nil {
+		t.Fatalf("GetContact(short N) error = %v", err)
+	}
+	if detail.Name == nil || *detail.Name != (StructuredName{FamilyName: "Doe", GivenName: "Jane"}) {
+		t.Fatalf("detail.Name = %#v, want family Doe, given Jane", detail.Name)
 	}
 }
 

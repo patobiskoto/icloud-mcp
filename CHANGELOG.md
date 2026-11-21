@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- Accept a vCard 3.0 `N` value with fewer than five components, as RFC 2426
+  allows. iOS writes contact groups as `N:<group name>`; one such group made
+  every Contacts search that scanned it fail with "invalid vCard". vCard 4.0
+  still requires all five components.
+
 ## [1.1.0] - 2026-11-09
 
 This minor release publishes the merged Calendar, Contacts, Mail, and

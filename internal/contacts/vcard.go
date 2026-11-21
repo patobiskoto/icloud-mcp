@@ -321,8 +321,11 @@ func validateRawCard(raw *rawCard) error {
 	if !displayName {
 		return invalidCardError()
 	}
+	// vCard 4.0 requires all five N components (RFC 6350 section 6.2.2);
+	// vCard 3.0 allows trailing ones to be omitted (RFC 2426 section 3.1.2),
+	// which iOS does for contact groups ("N:<group name>").
 	for _, property := range names {
-		if countUnescaped(property.value, ';') != 4 {
+		if separators := countUnescaped(property.value, ';'); separators > 4 || v4 && separators != 4 {
 			return invalidCardError()
 		}
 	}
@@ -848,7 +851,11 @@ func cardDetail(view cardView, version, addressBook, etag string) *Contact {
 	detail.TruncatedFields = appendFieldTruncation(detail.TruncatedFields, addressTruncation, urlTruncation)
 	detail.Notes = truncateUTF8(decodeTextValue(view.firstValue(vcard.FieldNote)), maxNotesBytes)
 	if rawName := view.firstValue(vcard.FieldName); rawName != "" {
-		if components, err := structuredComponents(rawName); err == nil && len(components) == 5 {
+		components, err := structuredComponents(rawName)
+		for err == nil && len(components) < 5 {
+			components = append(components, "")
+		}
+		if err == nil && len(components) == 5 {
 			detail.Name = &StructuredName{
 				FamilyName:      truncateUTF8(components[0], maxTextBytes),
 				GivenName:       truncateUTF8(components[1], maxTextBytes),
